@@ -1,0 +1,13 @@
+[Unit]
+Description=Arch Linux System Maintenance
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/Maintenance/arch_maintenance.sh --yes
+User=root
+StandardOutput=append:/home/Maintenance/logs/maintenance_%Y-%m-%d_%H-%M.log
+StandardError=append:/home/Maintenance/logs/maintenance_%Y-%m-%d_%H-%M.log
+
+[Install]
+WantedBy=multi-user.target

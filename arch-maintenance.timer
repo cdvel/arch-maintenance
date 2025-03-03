@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Arch Linux Maintenance every two weeks
+Requires=arch-maintenance.service
+
+[Timer]
+Unit=arch-maintenance.service
+OnCalendar=biweekly
+Persistent=true
+RandomizedDelaySec=1hour
+
+[Install]
+WantedBy=timers.target
