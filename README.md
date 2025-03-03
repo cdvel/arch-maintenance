@@ -19,6 +19,16 @@ This repository contains scripts to automate routine maintenance tasks for Arch 
 - 📝 Comprehensive logging
 - 🛡️ Safety features (dry-run mode, confirmations)
 
+## Requirements
+
+The following packages are required for full functionality:
+
+- `pacman` (built-in on Arch)
+- `reflector` - For optimizing mirror lists: `sudo pacman -S reflector`
+- `yay` - For AUR support: [Installation instructions](https://github.com/Jguer/yay#installation)
+
+Without these packages, some features may be disabled or limited in functionality.
+
 ## Files
 
 - `arch_maintenance.sh` - The main maintenance script
@@ -83,6 +93,7 @@ The script supports several command-line options for safety:
 - `-o, --no-orphans` - Skip orphaned package removal
 - `-j, --no-journal-clean` - Skip journal cleaning
 - `-y, --yes` - Auto-confirm all actions
+- `--yolo` - Skip all confirmations and use aggressive defaults
 - `-d, --dry-run` - Show what would be done without making changes
 - `-b, --no-backup` - Skip pacman database backup
 

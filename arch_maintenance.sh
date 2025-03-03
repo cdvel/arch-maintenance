@@ -23,6 +23,7 @@ CLEAN_JOURNALS=true
 AUTO_CONFIRM=false
 DRY_RUN=false
 BACKUP_PACMAN=true
+YOLO_MODE=false
 
 # Show help function
 function show_help() {
@@ -33,6 +34,7 @@ function show_help() {
   echo "  -o, --no-orphans       Skip orphaned package removal"
   echo "  -j, --no-journal-clean Skip journal cleaning"
   echo "  -y, --yes              Auto-confirm all actions"
+  echo "  --yolo                 Skip all confirmations and use aggressive defaults"
   echo "  -d, --dry-run          Show what would be done without actually doing it"
   echo "  -b, --no-backup        Skip pacman database backup"
   exit 0
@@ -61,6 +63,11 @@ while [[ $# -gt 0 ]]; do
     shift
     ;;
   -y | --yes)
+    AUTO_CONFIRM=true
+    shift
+    ;;
+  --yolo)
+    YOLO_MODE=true
     AUTO_CONFIRM=true
     shift
     ;;
@@ -106,7 +113,7 @@ function task_header() {
 
 # Function to prompt for confirmation
 function confirm_action() {
-  if [ "$AUTO_CONFIRM" = true ]; then
+  if [ "$AUTO_CONFIRM" = true ] || [ "$YOLO_MODE" = true ]; then
     return 0
   fi
 
@@ -179,16 +186,26 @@ fi
 # Update pacman mirrors to get fastest mirrors
 task_header "Updating pacman mirrors 🌐"
 echo -e "${CYAN}ℹ️ This updates mirror list for faster downloads${NC}"
-if confirm_action "Do you want to update the pacman mirrors?"; then
-  if [ "$HAS_YAY" = true ]; then
-    run_command "yay -Sy reflector --needed --noconfirm"
-  else
-    run_command "pacman -Sy reflector --needed --noconfirm"
-  fi
-  run_command "reflector --verbose --country 'United States' --latest 5 --sort rate --save /etc/pacman.d/mirrorlist"
-  echo -e "${CYAN}📊 Mirror list updated for optimal speeds${NC}"
+
+# Check if reflector is installed
+if ! command -v reflector &>/dev/null; then
+  echo -e "${RED}⚠️ reflector is not installed. Skipping mirror update.${NC}"
+  echo -e "${YELLOW}Install reflector with: sudo pacman -S reflector${NC}"
 else
-  echo -e "${YELLOW}⏩ Skipping mirror update${NC}"
+  if confirm_action "Do you want to update the pacman mirrors?"; then
+    # Try to detect country automatically through IP geolocation
+    COUNTRY=$(curl -s https://ipinfo.io/country 2>/dev/null)
+    if [ -z "$COUNTRY" ]; then
+      echo -e "${YELLOW}Could not detect country automatically, using default settings.${NC}"
+      run_command "reflector --verbose --latest 5 --sort rate --save /etc/pacman.d/mirrorlist"
+    else
+      echo -e "${CYAN}Detected country: $COUNTRY${NC}"
+      run_command "reflector --verbose --country '$COUNTRY' --latest 5 --sort rate --save /etc/pacman.d/mirrorlist"
+    fi
+    echo -e "${CYAN}📊 Mirror list updated for optimal speeds${NC}"
+  else
+    echo -e "${YELLOW}⏩ Skipping mirror update${NC}"
+  fi
 fi
 
 # Full system update (including AUR packages when using yay)
@@ -259,9 +276,9 @@ if [ "$REMOVE_ORPHANS" = true ]; then
 
     if confirm_action "Do you want to remove these orphaned packages?"; then
       if [ "$HAS_YAY" = true ]; then
-        run_command "yay -Rns $(pacman -Qtdq) --noconfirm"
+        run_command "yay -Rns $ORPHANS --noconfirm"
       else
-        run_command "pacman -Rns $(pacman -Qtdq) --noconfirm"
+        run_command "pacman -Rns $ORPHANS --noconfirm"
       fi
       echo -e "${GREEN}♻️ System cleaned of orphaned packages${NC}"
     else
@@ -283,19 +300,6 @@ task_header "Checking system logs for errors 📋"
 echo -e "${CYAN}ℹ️ Checking recent logs for critical errors${NC}"
 run_command "journalctl -p 3 -xb"
 echo -e "${CYAN}📒 System logs inspected${NC}"
-
-# Check for system file errors
-task_header "Checking for filesystem errors 💾"
-echo -e "${CYAN}ℹ️ This will just report errors. To fix them, you'll need to run manual fsck commands.${NC}"
-for device in $(lsblk -o NAME -n -l | grep -v loop); do
-  echo -e "${YELLOW}Checking $device:${NC}"
-  if [ "$DRY_RUN" = false ]; then
-    fsck -n /dev/$device 2>/dev/null || echo -e "${YELLOW}Cannot check /dev/$device automatically${NC}"
-  else
-    echo -e "${CYAN}(dry run) Would check /dev/$device for errors${NC}"
-  fi
-done
-echo -e "${GREEN}📂 Filesystem check completed${NC}"
 
 # Trim SSD if applicable
 task_header "Performing SSD TRIM 💿"
