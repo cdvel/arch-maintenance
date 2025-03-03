@@ -45,7 +45,7 @@ This repository contains scripts to automate routine maintenance tasks for Arch 
    ```
 
 This will:
-- Create a maintenance directory at `/home/arch-maintenance`
+- Create a maintenance directory at `~/arch-maintenance`
 - Install the systemd service and timer
 - Set up log rotation
 - Enable automatic execution every two weeks
@@ -54,7 +54,7 @@ This will:
 
 ### Automatic Execution
 
-After installation, the script will run automatically every two weeks and log its output to `/home/arch-maintenance/logs/`.
+After installation, the script will run automatically every two weeks and log its output to `~/arch-maintenance/logs/`.
 
 Check the timer status:
 ```bash
@@ -70,7 +70,7 @@ systemctl list-timers arch-maintenance.timer
 
 Run the script manually with:
 ```bash
-sudo /home/arch-maintenance/arch_maintenance.sh
+sudo ~/arch-maintenance/arch_maintenance.sh
 ```
 
 ### Command Line Options
@@ -88,12 +88,12 @@ The script supports several command-line options for safety:
 
 Example of a dry run:
 ```bash
-sudo /home/arch-maintenance/arch_maintenance.sh --dry-run
+sudo ~/arch-maintenance/arch_maintenance.sh --dry-run
 ```
 
 ## Logs
 
-Logs are stored in `/home/arch-maintenance/logs/` with timestamps and are automatically rotated to prevent excessive disk usage.
+Logs are stored in `~/arch-maintenance/logs/` with timestamps and are automatically rotated to prevent excessive disk usage.
 
 ## Customization
 
