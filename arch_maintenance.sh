@@ -24,6 +24,8 @@ AUTO_CONFIRM=false
 DRY_RUN=false
 BACKUP_PACMAN=true
 YOLO_MODE=false
+UPDATE_FLATPAK=true
+REINSTALL_FLATPAK=true
 
 # Show help function
 function show_help() {
@@ -37,6 +39,8 @@ function show_help() {
   echo "  --yolo                 Skip all confirmations and use aggressive defaults"
   echo "  -d, --dry-run          Show what would be done without actually doing it"
   echo "  -b, --no-backup        Skip pacman database backup"
+  echo "  -f, --no-flatpak       Skip Flatpak updates and maintenance"
+  echo "  --no-flatpak-reinstall Skip reinstalling Flatpak packages after maintenance"
   exit 0
 }
 
@@ -77,6 +81,15 @@ while [[ $# -gt 0 ]]; do
     ;;
   -b | --no-backup)
     BACKUP_PACMAN=false
+    shift
+    ;;
+  -f | --no-flatpak)
+    UPDATE_FLATPAK=false
+    REINSTALL_FLATPAK=false
+    shift
+    ;;
+  --no-flatpak-reinstall)
+    REINSTALL_FLATPAK=false
     shift
     ;;
   *)
@@ -154,6 +167,15 @@ else
   HAS_YAY=true
 fi
 
+# Check if flatpak is installed
+if ! command -v flatpak &>/dev/null; then
+  echo -e "${YELLOW}⚠️  Warning: flatpak is not installed. Flatpak operations will be skipped.${NC}"
+  HAS_FLATPAK=false
+else
+  echo -e "${GREEN}✓ flatpak detected${NC}"
+  HAS_FLATPAK=true
+fi
+
 # Backup pacman database
 if [ "$BACKUP_PACMAN" = true ]; then
   task_header "Backing up pacman database 💾"
@@ -229,6 +251,37 @@ else
   echo -e "${YELLOW}⏩ System update skipped (disabled by command line option)${NC}"
 fi
 
+# Update Flatpak packages
+if [ "$UPDATE_FLATPAK" = true ] && [ "$HAS_FLATPAK" = true ]; then
+  task_header "Updating Flatpak Applications 📱"
+  echo -e "${CYAN}ℹ️ This will update all Flatpak applications${NC}"
+
+  # List installed Flatpak apps
+  echo -e "${CYAN}ℹ️ Currently installed Flatpak applications:${NC}"
+  run_command "flatpak list --app"
+
+  if confirm_action "Do you want to update Flatpak applications?"; then
+    run_command "flatpak update -y"
+    echo -e "${GREEN}✅ Flatpak applications updated${NC}"
+  else
+    echo -e "${YELLOW}⏩ Skipping Flatpak updates${NC}"
+  fi
+
+  # Clean unused Flatpak runtimes and extensions
+  if confirm_action "Do you want to clean unused Flatpak runtimes and extensions?"; then
+    run_command "flatpak uninstall --unused -y"
+    echo -e "${GREEN}✅ Unused Flatpak components removed${NC}"
+  else
+    echo -e "${YELLOW}⏩ Skipping Flatpak cleanup${NC}"
+  fi
+else
+  if [ "$UPDATE_FLATPAK" = false ]; then
+    echo -e "${YELLOW}⏩ Flatpak operations skipped (disabled by command line option)${NC}"
+  elif [ "$HAS_FLATPAK" = false ]; then
+    echo -e "${YELLOW}⏩ Flatpak operations skipped (Flatpak not installed)${NC}"
+  fi
+fi
+
 # Clean package cache
 if [ "$PERFORM_CACHE_CLEAN" = true ]; then
   task_header "Cleaning package cache 🧹"
@@ -267,6 +320,16 @@ if [ "$REMOVE_ORPHANS" = true ]; then
   echo -e "${CYAN}ℹ️ This removes packages that are no longer required by any installed software${NC}"
   echo -e "${YELLOW}⚠️ Warning: Sometimes packages may be incorrectly identified as orphaned${NC}"
 
+  # Explicitly warn about Flatpak dependencies
+  if [ "$HAS_FLATPAK" = true ]; then
+    echo -e "${RED}⚠️ Warning: This may remove dependencies needed by Flatpak applications${NC}"
+    if [ "$REINSTALL_FLATPAK" = true ]; then
+      echo -e "${GREEN}✓ Flatpak applications will be reinstalled after orphan removal to restore dependencies${NC}"
+    else
+      echo -e "${RED}⚠️ Flatpak reinstallation is disabled - your Flatpak apps may break!${NC}"
+    fi
+  fi
+
   ORPHANS=$(pacman -Qtdq)
   if [[ -z "$ORPHANS" ]]; then
     echo -e "${GREEN}🔍 No orphaned packages found.${NC}"
@@ -281,6 +344,11 @@ if [ "$REMOVE_ORPHANS" = true ]; then
         run_command "pacman -Rns $ORPHANS --noconfirm"
       fi
       echo -e "${GREEN}♻️ System cleaned of orphaned packages${NC}"
+
+      # Extra message about Flatpak reinstallation after orphan removal
+      if [ "$HAS_FLATPAK" = true ] && [ "$REINSTALL_FLATPAK" = true ]; then
+        echo -e "${CYAN}ℹ️ Flatpak applications will be reinstalled later to fix any dependency issues${NC}"
+      fi
     else
       echo -e "${YELLOW}⏩ Skipping orphaned package removal${NC}"
     fi
@@ -333,6 +401,41 @@ echo -e "${CYAN}ℹ️ Displaying disk usage report${NC}"
 run_command "df -h"
 echo -e "${CYAN}💽 Disk usage report generated${NC}"
 
+# Reinstall Flatpak packages to fix any dependency issues
+if [ "$REINSTALL_FLATPAK" = true ] && [ "$HAS_FLATPAK" = true ]; then
+  task_header "Reinstalling Flatpak packages 🔄"
+  echo -e "${CYAN}ℹ️ This reinstalls all Flatpak packages to fix dependencies that may have been removed${NC}"
+  echo -e "${CYAN}ℹ️ This is necessary because orphan removal may have removed packages Flatpak depends on${NC}"
+
+  if confirm_action "Do you want to reinstall Flatpak packages to fix potential dependency issues?"; then
+    # Get list of installed Flatpak applications
+    FLATPAK_APPS=$(flatpak list --app --columns=application)
+
+    if [ -n "$FLATPAK_APPS" ]; then
+      echo -e "${CYAN}ℹ️ Reinstalling Flatpak packages to restore system dependencies${NC}"
+      for app in $FLATPAK_APPS; do
+        run_command "flatpak install --reinstall -y $app"
+      done
+      echo -e "${GREEN}✅ Flatpak packages reinstalled successfully${NC}"
+      echo -e "${GREEN}✅ This should fix any issues caused by orphan package removal${NC}"
+    else
+      echo -e "${YELLOW}ℹ️ No Flatpak applications found to reinstall${NC}"
+    fi
+  else
+    echo -e "${YELLOW}⏩ Skipping Flatpak package reinstallation${NC}"
+    if [ "$REMOVE_ORPHANS" = true ]; then
+      echo -e "${RED}⚠️ Warning: Your Flatpak applications may not work correctly${NC}"
+      echo -e "${RED}⚠️ If you experience issues, run: flatpak repair${NC}"
+    fi
+  fi
+else
+  if [ "$HAS_FLATPAK" = true ] && [ "$REINSTALL_FLATPAK" = false ] && [ "$REMOVE_ORPHANS" = true ]; then
+    echo -e "${RED}⚠️ Warning: Orphaned packages were removed but Flatpak reinstallation was skipped${NC}"
+    echo -e "${RED}⚠️ Your Flatpak applications may have broken dependencies${NC}"
+    echo -e "${YELLOW}To fix issues: flatpak repair${NC}"
+  fi
+fi
+
 # Summary
 echo ""
 echo -e "${BLUE}${BOLD}══════════════════════════════════════════${NC}"
@@ -354,6 +457,8 @@ else
   [ "$REMOVE_ORPHANS" = false ] && SKIPPED="${SKIPPED}orphan removal, "
   [ "$CLEAN_JOURNALS" = false ] && SKIPPED="${SKIPPED}journal cleaning, "
   [ "$BACKUP_PACMAN" = false ] && SKIPPED="${SKIPPED}pacman backup, "
+  [ "$UPDATE_FLATPAK" = false ] && SKIPPED="${SKIPPED}flatpak updates, "
+  [ "$REINSTALL_FLATPAK" = false ] && SKIPPED="${SKIPPED}flatpak reinstallation, "
 
   if [ ! -z "$SKIPPED" ]; then
     SKIPPED=${SKIPPED%, }
@@ -363,11 +468,26 @@ else
   echo -e "${YELLOW}🔄 Consider rebooting your system to apply all updates.${NC}"
 fi
 
-# Additional yay-specific tip
+# Additional tips
+echo ""
+echo -e "${CYAN}💡 TIPS:${NC}"
+
+# yay-specific tip
 if [ "$HAS_YAY" = true ]; then
-  echo ""
-  echo -e "${CYAN}💡 TIP: To check for development package updates from the AUR, run:${NC}"
+  echo -e "${CYAN}  • To check for development package updates from the AUR, run:${NC}"
   echo -e "${YELLOW}     yay -Sua${NC}"
+fi
+
+# Flatpak-specific tip
+if [ "$HAS_FLATPAK" = true ]; then
+  echo -e "${CYAN}  • To list Flatpak applications that need updating:${NC}"
+  echo -e "${YELLOW}     flatpak remote-ls --updates${NC}"
+
+  echo -e "${CYAN}  • To get more information about a Flatpak application:${NC}"
+  echo -e "${YELLOW}     flatpak info <application-id>${NC}"
+
+  echo -e "${CYAN}  • If Flatpak applications have issues after maintenance:${NC}"
+  echo -e "${YELLOW}     flatpak repair${NC}"
 fi
 
 echo ""

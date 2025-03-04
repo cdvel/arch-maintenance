@@ -15,6 +15,7 @@ This repository contains scripts to automate routine maintenance tasks for Arch 
 - 📋 System logs check
 - 💿 SSD TRIM support
 - 📊 Disk usage reporting
+- 📱 Flatpak support and dependency protection
 - ⏱️ Automated biweekly execution via systemd
 - 📝 Comprehensive logging
 - 🛡️ Safety features (dry-run mode, confirmations)
@@ -26,6 +27,7 @@ The following packages are required for full functionality:
 - `pacman` (built-in on Arch)
 - `reflector` - For optimizing mirror lists: `sudo pacman -S reflector`
 - `yay` - For AUR support: [Installation instructions](https://github.com/Jguer/yay#installation)
+- `flatpak` - For Flatpak application support: `sudo pacman -S flatpak`
 
 Without these packages, some features may be disabled or limited in functionality.
 
@@ -96,10 +98,27 @@ The script supports several command-line options for safety:
 - `--yolo` - Skip all confirmations and use aggressive defaults
 - `-d, --dry-run` - Show what would be done without making changes
 - `-b, --no-backup` - Skip pacman database backup
+- `-f, --no-flatpak` - Skip Flatpak updates and maintenance
+- `--no-flatpak-reinstall` - Skip reinstalling Flatpak packages after maintenance
 
 Example of a dry run:
 ```bash
 sudo ~/arch-maintenance/arch_maintenance.sh --dry-run
+```
+
+### Flatpak Support
+
+The script includes special handling for Flatpak applications:
+
+- Updating Flatpak applications
+- Cleaning unused Flatpak runtimes
+- Reinstalling Flatpak packages after orphan removal to restore dependencies
+
+**Note:** Orphan package removal may break Flatpak dependencies, which is why the script automatically reinstalls Flatpak packages at the end of the maintenance process.
+
+If you're experiencing issues with Flatpak applications after running the script, you can manually repair them with:
+```bash
+flatpak repair
 ```
 
 ## Logs
