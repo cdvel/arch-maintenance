@@ -22,7 +22,7 @@ echo -e "${BLUE}${BOLD} Arch Maintenance Setup${NC}"
 echo -e "${BLUE}${BOLD}=====================================${NC}"
 
 # Create maintenance directory
-MAINT_DIR="/home/arch-maintenance
+MAINT_DIR="/home/arch-maintenance"
 echo -e "${YELLOW}Creating maintenance directory at $MAINT_DIR...${NC}"
 mkdir -p $MAINT_DIR
 mkdir -p $MAINT_DIR/logs
