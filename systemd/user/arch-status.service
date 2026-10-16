@@ -1,0 +1,6 @@
+[Unit]
+Description=Check Arch maintenance status and notify
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/arch-maintenance status --notify

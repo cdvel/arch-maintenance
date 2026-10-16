@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Arch maintenance status check
+
+[Timer]
+OnCalendar=*-*-* 10:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
