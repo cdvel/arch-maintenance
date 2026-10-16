@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -10,9 +11,16 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install dependencies
-        run: pacman -Syu --noconfirm --needed git shellcheck pacman-contrib fakeroot flatpak libnotify sudo
+        # Retry: a single mirror failing to serve a package fails the whole transaction
+        run: |
+          for attempt in 1 2 3; do
+            pacman -Syu --noconfirm --needed git shellcheck pacman-contrib fakeroot flatpak libnotify sudo && exit 0
+            echo "pacman failed (attempt $attempt), retrying in 15s"
+            sleep 15
+          done
+          exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Lint shell scripts
         run: shellcheck install.sh bin/arch-maintenance libexec/pacman-db-backup test/nspawn.sh
