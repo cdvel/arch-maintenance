@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Snapshotting pacman database...
+When = PreTransaction
+Exec = /usr/local/lib/arch-maintenance/pacman-db-backup

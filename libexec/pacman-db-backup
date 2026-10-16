@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Snapshot the local pacman database before each transaction and keep the
+# newest $KEEP snapshots. Called by the 00-arch-maintenance-db-backup hook.
+#
+# Restore:  sudo tar --zstd -xf /var/lib/pacman/backup/local-<stamp>.tar.zst -C /var/lib/pacman
+
+set -euo pipefail
+
+readonly DIR=/var/lib/pacman/backup
+readonly KEEP=10
+
+mkdir -p "$DIR"
+tar --zstd -cf "$DIR/local-$(date +%Y%m%d-%H%M%S).tar.zst" -C /var/lib/pacman local
+
+# Timestamped names sort chronologically, so the oldest come first in the glob.
+snapshots=("$DIR"/local-*.tar.zst)
+if (( ${#snapshots[@]} > KEEP )); then
+  rm -f -- "${snapshots[@]:0:${#snapshots[@]}-KEEP}"
+fi
