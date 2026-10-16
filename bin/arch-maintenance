@@ -69,7 +69,10 @@ last_upgrade_days() {
 }
 
 # The running kernel's modules disappear once a newer kernel is installed.
-reboot_needed() { [[ ! -d /usr/lib/modules/$(uname -r) ]]; }
+# Containers have no kernels in /usr/lib/modules, so there is nothing to compare.
+reboot_needed() {
+  compgen -G '/usr/lib/modules/*/vmlinuz' >/dev/null && [[ ! -d /usr/lib/modules/$(uname -r) ]]
+}
 
 pacnew_files() { pacdiff -o 2>/dev/null || true; }
 
@@ -101,14 +104,20 @@ dir_size() { du -sh "$1" 2>/dev/null | cut -f1; }
 cmd_status() {
   local notify=false
   [[ ${1:-} == --notify ]] && notify=true
-  local attention=() line days repo aur=0
+  local attention=() line days out rc=0 repo aur=0
 
   section "Updates"
   days=$(last_upgrade_days)
-  repo=$(checkupdates 2>/dev/null | wc -l) || true
+  # checkupdates exits 2 when there is nothing to update, 1 on errors
+  out=$(checkupdates --nocolor 2>&1) || rc=$?
+  case $rc in
+    0) repo=$(wc -l <<<"$out") ;;
+    2) repo=0 ;;
+    *) repo='?'; warn "checkupdates failed: ${out##*$'\n'}" ;;
+  esac
   have yay && { aur=$(yay -Qua 2>/dev/null | wc -l) || true; }
   if (( days < 0 )); then
-    warn "No full upgrade found in pacman.log"
+    warn "No full upgrade found in pacman.log; $repo repo + $aur AUR updates pending"
   elif (( days > MAX_AGE_DAYS )); then
     warn "Last full upgrade ${days} days ago; $repo repo + $aur AUR updates pending"
     attention+=("Last upgrade ${days} days ago ($repo + $aur updates pending)")
@@ -153,7 +162,9 @@ cmd_status() {
     section "Caches"
     ok "pacman cache: $(dir_size /var/cache/pacman/pkg)"
     [[ -d $HOME/.cache/yay ]] && ok "AUR build cache: $(dir_size "$HOME/.cache/yay")"
-    ok "journal: $(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]' | head -n1)"
+    local journal
+    journal=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]' | head -n1) || true
+    ok "journal: ${journal:-n/a}"
     if makepkg_debug_enabled; then
       warn "makepkg builds *-debug packages for every AUR build; add !debug to OPTIONS in makepkg.conf to stop"
     fi
@@ -161,7 +172,8 @@ cmd_status() {
 
   if $notify && (( ${#attention[@]} )) && have notify-send; then
     notify-send -a arch-maintenance -i system-software-update \
-      "Arch maintenance needed" "$(printf '• %s\n' "${attention[@]}")"
+      "Arch maintenance needed" "$(printf '• %s\n' "${attention[@]}")" ||
+      echo "notify-send failed (is a notification daemon running?)" >&2
   fi
 }
 

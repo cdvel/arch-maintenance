@@ -40,6 +40,7 @@ install_all() {
 
   local missing=()
   have paccache || missing+=(pacman-contrib)
+  have fakeroot || missing+=(fakeroot) # optional dep of pacman-contrib, required by checkupdates
   have reflector || missing+=(reflector)
   have notify-send || missing+=(libnotify)
   if (( ${#missing[@]} )); then
