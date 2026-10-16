@@ -62,6 +62,14 @@ These v1 problems prevented it from working as scheduled automation:
 - The script always exited 0, so systemd never saw a failure.
 - Pacman database backups were never pruned.
 
+## [1.0.1] - 2026-10-16
+
+Maintenance release on the v1 line.
+
+### Fixed
+
+- `setup_maintenance.sh`: add the missing closing quote on `MAINT_DIR`, which made the script fail before running anything ([#2](https://github.com/cdvel/arch-maintenance/pull/2), thanks @vasilliourous).
+
 ## [1.0.0] - 2025-03-04
 
 Initial release: a single root script with a biweekly systemd timer, based on Fernando Cejas's Arch Linux maintenance guide.
@@ -85,4 +93,5 @@ Initial release: a single root script with a biweekly systemd timer, based on Fe
 
 [2.0.1]: https://github.com/cdvel/arch-maintenance/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/cdvel/arch-maintenance/compare/v1.0.0...v2.0.0
+[1.0.1]: https://github.com/cdvel/arch-maintenance/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/cdvel/arch-maintenance/releases/tag/v1.0.0
