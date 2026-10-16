@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed git shellcheck pacman-contrib fakeroot flatpak libnotify sudo
+
+      - uses: actions/checkout@v4
+
+      - name: Lint shell scripts
+        run: shellcheck install.sh bin/arch-maintenance libexec/pacman-db-backup test/nspawn.sh
+
+      - name: Verify systemd units
+        run: |
+          install -Dm755 bin/arch-maintenance /usr/local/bin/arch-maintenance
+          install -Dm644 systemd/system/paccache.service.d/arch-maintenance.conf \
+            /etc/systemd/system/paccache.service.d/arch-maintenance.conf
+          systemd-analyze verify \
+            systemd/system/*.service systemd/system/*.timer \
+            systemd/user/*.service systemd/user/*.timer \
+            /usr/lib/systemd/system/paccache.service
+
+      - name: Pacman hook snapshots the database
+        run: |
+          install -Dm755 libexec/pacman-db-backup /usr/local/lib/arch-maintenance/pacman-db-backup
+          install -Dm644 hooks/00-arch-maintenance-db-backup.hook \
+            /etc/pacman.d/hooks/00-arch-maintenance-db-backup.hook
+          pacman -S --noconfirm sudo
+          snapshot=$(ls /var/lib/pacman/backup/local-*.tar.zst)
+          tar --zstd -tf "$snapshot" | grep '^local/sudo-' >/dev/null
+
+      - name: Snapshot rotation keeps the newest 10
+        run: |
+          for _ in $(seq 12); do pacman -S --noconfirm sudo >/dev/null; sleep 1; done
+          count=$(ls /var/lib/pacman/backup/local-*.tar.zst | wc -l)
+          echo "snapshots: $count"
+          test "$count" -eq 10
+
+      - name: CLI smoke tests
+        run: |
+          useradd -m tester
+          if arch-maintenance status; then echo "should refuse root"; exit 1; fi
+          runuser -u tester -- arch-maintenance help
+          runuser -u tester -- arch-maintenance version
+          runuser -u tester -- arch-maintenance status
+          sudo -u tester arch-maintenance status --notify
+          if runuser -u tester -- arch-maintenance bogus; then echo "should reject unknown command"; exit 1; fi
+
+      - name: Installer arguments
+        run: |
+          bash -n install.sh
+          if runuser -u tester -- ./install.sh --bogus; then echo "should reject unknown option"; exit 1; fi
