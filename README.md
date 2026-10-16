@@ -123,16 +123,17 @@ journalctl -u pacman-predownload -u flatpak-update -u paccache
 
 **CI** (`.github/workflows/ci.yml`) runs on every push in an `archlinux` container: shellcheck, `systemd-analyze verify` on all units, a real pacman transaction to check the database snapshot hook and its rotation, and CLI smoke tests.
 
-**Integration test** (`test/nspawn.sh`) boots a full systemd in a `systemd-nspawn` container built from an [Arch Linux Archive](https://archive.archlinux.org/) snapshot, so it starts out of date with real pending updates. Each run uses a volatile overlay and starts from the same state.
+**Integration test** (`test/nspawn.sh`) boots a full systemd in a throwaway `systemd-nspawn` container built from an [Arch Linux Archive](https://archive.archlinux.org/) snapshot, so it starts out of date with real pending updates. Every run builds a fresh container under `/var/tmp` and deletes it on exit, including on failure or Ctrl-C; nothing is kept.
 
 ```bash
 sudo pacman -S --needed arch-install-scripts
-sudo test/nspawn.sh build              # snapshot from 90 days ago, or pass YYYY/MM/DD
-sudo test/nspawn.sh run                # install, hook, timers, services, status, uninstall
-sudo test/nspawn.sh run --skip-download  # same, without pre-downloading updates
-sudo test/nspawn.sh shell              # log in to try `update` and `clean` by hand
-sudo test/nspawn.sh destroy
+sudo test/nspawn.sh run                    # install, hook, timers, services, status, uninstall
+sudo test/nspawn.sh run --skip-download    # same, without pre-downloading updates
+sudo test/nspawn.sh run --date 2026/06/01  # pick the archive snapshot (default: 90 days ago)
+sudo test/nspawn.sh shell                  # log in to try `update` and `clean` by hand
 ```
+
+Each run downloads the bootstrap packages (about 500MB) again.
 
 The container shares the host kernel, so kernel upgrades, DKMS and the reboot check need a VM.
 

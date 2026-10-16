@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Integration test for arch-maintenance in a systemd-nspawn container.
+# Integration test for arch-maintenance in a throwaway systemd-nspawn container.
 #
-# The container is bootstrapped from an Arch Linux Archive snapshot and then
-# pointed at current mirrors, so it starts out of date like a neglected machine:
-# real pending updates, real news, real .pacnew files after upgrading.
-# `run` and `shell` boot it with a volatile overlay, so every session starts
-# from the same out-of-date state and nothing is written back.
+# Each invocation bootstraps a fresh container from an Arch Linux Archive
+# snapshot, points it at current mirrors so it starts out of date like a
+# neglected machine (real pending updates, real news, real .pacnew files after
+# upgrading), uses it, and deletes it on exit, including on failure or Ctrl-C.
+# Nothing is kept between runs.
 #
-#   sudo test/nspawn.sh build [YYYY/MM/DD]     create the container (default: 90 days ago)
-#   sudo test/nspawn.sh run [--skip-download]  boot, run automated checks, power off
-#   sudo test/nspawn.sh shell                  boot and log in as 'tester' for manual update/clean
-#   sudo test/nspawn.sh destroy                delete the container
+#   sudo test/nspawn.sh run [--skip-download] [--date YYYY/MM/DD]
+#       build, run automated checks, delete
+#   sudo test/nspawn.sh shell [--date YYYY/MM/DD]
+#       build, log in as 'tester' for manual update/clean, delete on logout
 #
+# --date picks the archive snapshot (default: 90 days ago). --skip-download
+# skips the pre-download check, which fetches a few hundred MB of updates.
 # The container shares the host kernel, so kernel, DKMS and reboot behaviour
 # are not covered.
 
@@ -21,68 +23,85 @@
 set -euo pipefail
 
 readonly MACHINE=arch-maintenance-test
-readonly ROOT=/var/lib/machines/$MACHINE
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 readonly REPO
 readonly CURRENT_MIRROR='https://geo.mirror.pkgbuild.com/$repo/os/$arch'
 readonly PACKAGES=(base sudo pacman-contrib fakeroot reflector flatpak libnotify)
+WORK='' ROOT=''
 
 say() { printf '\e[1;34m==>\e[0m %s\n' "$1"; }
 die() { printf '\e[31merror:\e[0m %s\n' "$1" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "Run with sudo (pacstrap and systemd-nspawn need root)."
+command -v pacstrap >/dev/null || die "pacstrap not found: sudo pacman -S arch-install-scripts"
+machinectl show "$MACHINE" &>/dev/null && die "$MACHINE is already running (another test in progress?)."
 
 # ---------------------------------------------------------------------------
 # Container lifecycle
 # ---------------------------------------------------------------------------
 
-cmd_build() {
-  local date=${1:-$(date -d '90 days ago' +%Y/%m/%d)} tmp
-  [[ -e $ROOT ]] && die "$ROOT already exists; run 'destroy' first."
-  command -v pacstrap >/dev/null || die "pacstrap not found: sudo pacman -S arch-install-scripts"
+poweroff() {
+  machinectl show "$MACHINE" &>/dev/null || return 0
+  machinectl poweroff "$MACHINE" 2>/dev/null || true
+  for _ in {1..30}; do
+    machinectl show "$MACHINE" &>/dev/null || return 0
+    sleep 1
+  done
+  machinectl terminate "$MACHINE" 2>/dev/null || true
+  sleep 2
+}
 
-  tmp=$(mktemp -d)
-  # shellcheck disable=SC2064 # expand $tmp now
-  trap "rm -rf '$tmp'" EXIT
-  echo "Server = https://archive.archlinux.org/repos/$date/\$repo/os/\$arch" >"$tmp/mirrorlist"
-  cat >"$tmp/pacman.conf" <<EOF
+# Runs on every exit path. --one-file-system refuses to descend into anything
+# still mounted, so an interrupted pacstrap can't take host paths with it.
+cleanup() {
+  poweroff
+  if [[ $WORK == /var/tmp/arch-maintenance-test.* && -d $WORK ]]; then
+    say "Deleting $WORK"
+    rm -rf --one-file-system -- "$WORK"
+  fi
+}
+
+build() {
+  local date=$1
+  WORK=$(mktemp -d /var/tmp/arch-maintenance-test.XXXXXX)
+  ROOT=$WORK/root
+  trap cleanup EXIT
+  trap 'exit 130' INT TERM
+
+  echo "Server = https://archive.archlinux.org/repos/$date/\$repo/os/\$arch" >"$WORK/mirrorlist"
+  cat >"$WORK/pacman.conf" <<EOF
 [options]
 Architecture = auto
 SigLevel = Required DatabaseOptional
 LocalFileSigLevel = Optional
 
 [core]
-Include = $tmp/mirrorlist
+Include = $WORK/mirrorlist
 
 [extra]
-Include = $tmp/mirrorlist
+Include = $WORK/mirrorlist
 EOF
 
-  say "Bootstrapping $ROOT from the $date archive snapshot"
-  mkdir -p "$ROOT"
-  pacstrap -C "$tmp/pacman.conf" -K "$ROOT" "${PACKAGES[@]}"
+  say "Bootstrapping a throwaway container from the $date archive snapshot (a few minutes)"
+  mkdir -m 755 "$ROOT"
+  pacstrap -C "$WORK/pacman.conf" -K "$ROOT" "${PACKAGES[@]}" >"$WORK/pacstrap.log" 2>&1 ||
+    { tail -n 30 "$WORK/pacstrap.log"; die "pacstrap failed"; }
 
-  say "Pointing the container at current mirrors"
   echo "Server = $CURRENT_MIRROR" >"$ROOT/etc/pacman.d/mirrorlist"
   echo "$MACHINE" >"$ROOT/etc/hostname"
 
-  say "Creating user 'tester' (passwordless sudo, lingering user manager)"
+  # Passwordless sudo, and a lingering user manager so user units run without a login
   systemd-nspawn -q -D "$ROOT" useradd -m -G wheel tester
   echo 'tester ALL=(ALL:ALL) NOPASSWD: ALL' >"$ROOT/etc/sudoers.d/tester"
   chmod 440 "$ROOT/etc/sudoers.d/tester"
   mkdir -p "$ROOT/var/lib/systemd/linger"
   touch "$ROOT/var/lib/systemd/linger/tester"
-
-  say "Built. Next: sudo $0 run"
 }
 
 boot() {
-  [[ -d $ROOT ]] || die "No container at $ROOT; run 'build' first."
-  machinectl show "$MACHINE" &>/dev/null && die "$MACHINE is already running."
-
-  say "Booting $MACHINE (volatile overlay; changes are discarded at power-off)"
+  say "Booting $MACHINE"
   systemd-run --quiet --collect --unit="$MACHINE" \
-    systemd-nspawn -q -b -D "$ROOT" -M "$MACHINE" --volatile=overlay \
+    systemd-nspawn -q -b -D "$ROOT" -M "$MACHINE" \
     --console=passive --resolv-conf=copy-host --bind-ro="$REPO:/repo"
 
   local state
@@ -97,25 +116,9 @@ boot() {
   die "Container did not finish booting (last state: ${state:-unknown}). See: journalctl -u $MACHINE"
 }
 
-poweroff() {
-  machinectl poweroff "$MACHINE" 2>/dev/null || true
-  for _ in {1..30}; do
-    machinectl show "$MACHINE" &>/dev/null || return 0
-    sleep 1
-  done
-  machinectl terminate "$MACHINE" 2>/dev/null || true
-}
-
-cmd_destroy() {
-  machinectl show "$MACHINE" &>/dev/null && poweroff
-  [[ -e $ROOT ]] || die "Nothing to destroy."
-  machinectl remove "$MACHINE"
-  say "Removed $ROOT"
-}
-
 cmd_shell() {
+  build "$1"
   boot
-  trap poweroff EXIT
   cat <<'EOF'
 
 Logged in as 'tester' (passwordless sudo). The repo is mounted read-only at /repo.
@@ -125,7 +128,7 @@ Suggested manual checks:
   arch-maintenance update          # no yay here, so this uses sudo pacman -Syu
   arch-maintenance clean
   /repo/install.sh --uninstall
-Exit the shell to power off; nothing is kept.
+Exit the shell to delete the container.
 
 EOF
   machinectl shell "tester@$MACHINE"
@@ -168,12 +171,10 @@ readonly INSTALLED_FILES=(
 )
 
 cmd_run() {
-  local download=true
-  [[ ${1:-} == --skip-download ]] && download=false
-
-  LOG=$(mktemp)
+  local date=$1 download=$2
+  build "$date"
+  LOG=$WORK/check.log
   boot
-  trap 'poweroff; rm -f "$LOG"' EXIT
 
   say "Install"
   check "install.sh succeeds" as_user /repo/install.sh
@@ -239,10 +240,22 @@ cmd_run() {
   printf '\e[32mAll %d checks passed\e[0m\n' "$PASS"
 }
 
-case ${1:-} in
-  build) cmd_build "${2:-}" ;;
-  run) cmd_run "${2:-}" ;;
-  shell) cmd_shell ;;
-  destroy) cmd_destroy ;;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+
+cmd=${1:-}
+shift || true
+date=$(date -d '90 days ago' +%Y/%m/%d) download=true
+while (($#)); do
+  case $1 in
+    --date) date=${2:?--date needs YYYY/MM/DD}; shift 2 ;;
+    --skip-download) download=false; shift ;;
+    *) usage ;;
+  esac
+done
+[[ $date =~ ^[0-9]{4}/[0-9]{2}/[0-9]{2}$ ]] || die "--date must be YYYY/MM/DD"
+
+case $cmd in
+  run) cmd_run "$date" "$download" ;;
+  shell) cmd_shell "$date" ;;
+  *) usage ;;
 esac
