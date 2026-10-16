@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-10-16
+
+### Changed
+
+- README: shorter wording, noun-phrase section titles.
+- CI runs on pushes to `main` and on pull requests only, so tag pushes no longer start duplicate runs.
+- CI retries the package install up to 3 times when a mirror fails to serve a package.
+- CI uses `actions/checkout@v5` (Node.js 24).
+
 ## [2.0.0] - 2026-10-16
 
 A redesign. v1 ran everything, including package upgrades, from one root script on a timer. v2 automates only the work that can't break the system and turns upgrades into a guided interactive command.
@@ -74,5 +83,6 @@ Initial release: a single root script with a biweekly systemd timer, based on Fe
 - Options to skip steps (`--no-update`, `--no-cache-clean`, `--no-orphans`, `--no-journal-clean`, `--no-backup`, `--no-flatpak`, `--no-flatpak-reinstall`), plus `--yes`, `--yolo` and `--dry-run`.
 - `setup_maintenance.sh` to install the script, a biweekly systemd service and timer, and a logrotate config.
 
+[2.0.1]: https://github.com/cdvel/arch-maintenance/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/cdvel/arch-maintenance/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/cdvel/arch-maintenance/releases/tag/v1.0.0

@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-readonly VERSION=2.0.0
+readonly VERSION=2.0.1
 
 # Tunables (environment overrides)
 MAX_AGE_DAYS=${ARCH_MAINT_MAX_AGE_DAYS:-14}   # nag when the last full upgrade is older than this
