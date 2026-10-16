@@ -40,13 +40,13 @@ The status notification fires when the last full upgrade is older than 14 days, 
 
 ## Requirements
 
-- `pacman-contrib` (`paccache`, `checkupdates`, `pacdiff`)
+- `pacman-contrib` (`paccache`, `checkupdates`, `pacdiff`) and `fakeroot` (needed by `checkupdates`)
 - `reflector`
 - `libnotify` (`notify-send`)
 - Optional: [`yay`](https://github.com/Jguer/yay) for AUR upgrades and Arch news, `flatpak`
 
 ```bash
-sudo pacman -S --needed pacman-contrib reflector libnotify
+sudo pacman -S --needed pacman-contrib fakeroot reflector libnotify
 ```
 
 ## Installation
@@ -118,6 +118,23 @@ systemctl list-timers paccache.timer reflector.timer fstrim.timer pacman-predown
 systemctl --user list-timers arch-status.timer
 journalctl -u pacman-predownload -u flatpak-update -u paccache
 ```
+
+## Testing
+
+**CI** (`.github/workflows/ci.yml`) runs on every push in an `archlinux` container: shellcheck, `systemd-analyze verify` on all units, a real pacman transaction to check the database snapshot hook and its rotation, and CLI smoke tests.
+
+**Integration test** (`test/nspawn.sh`) boots a full systemd in a `systemd-nspawn` container built from an [Arch Linux Archive](https://archive.archlinux.org/) snapshot, so it starts out of date with real pending updates. Each run uses a volatile overlay and starts from the same state.
+
+```bash
+sudo pacman -S --needed arch-install-scripts
+sudo test/nspawn.sh build              # snapshot from 90 days ago, or pass YYYY/MM/DD
+sudo test/nspawn.sh run                # install, hook, timers, services, status, uninstall
+sudo test/nspawn.sh run --skip-download  # same, without pre-downloading updates
+sudo test/nspawn.sh shell              # log in to try `update` and `clean` by hand
+sudo test/nspawn.sh destroy
+```
+
+The container shares the host kernel, so kernel upgrades, DKMS and the reboot check need a VM.
 
 ## License
 
