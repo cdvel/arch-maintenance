@@ -1,0 +1,15 @@
+# Download pending repo updates into the pacman cache without installing them.
+# checkupdates syncs a temporary copy of the sync databases, so the system's
+# package database is never touched and no partial upgrade can happen.
+[Unit]
+Description=Pre-download pending pacman updates
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/checkupdates --download --nocolor
+# checkupdates exits 2 when there is nothing to update
+SuccessExitStatus=2
+Nice=19
+IOSchedulingClass=idle
