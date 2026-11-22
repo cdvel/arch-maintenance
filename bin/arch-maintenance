@@ -332,7 +332,7 @@ advisories_section() {
     return 0
   fi
   mapfile -t lines <<<"$out"
-  warn "${#lines[@]} installed packages have a known vulnerability with a fix available"
+  warn "Known vulnerabilities with a fix available in ${#lines[@]} installed package(s)"
   printf '      %s\n' "${lines[@]:0:10}"
   (( ${#lines[@]} <= 10 )) || printf '      ... and %d more (run: arch-audit -u)\n' $(( ${#lines[@]} - 10 ))
   attention+=("${#lines[@]} packages with known vulnerabilities (run: arch-audit -u)")
