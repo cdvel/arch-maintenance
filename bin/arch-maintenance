@@ -32,6 +32,7 @@ fi
 
 section() { printf '\n%s==> %s%s\n' "$BLUE$BOLD" "$1" "$NC"; }
 ok() { printf '  %s✓%s %s\n' "$GREEN" "$NC" "$1"; }
+note() { printf '  %s•%s %s\n' "$BLUE" "$NC" "$1"; }
 warn() { printf '  %s!%s %s\n' "$YELLOW" "$NC" "$1"; }
 die() { printf '%serror:%s %s\n' "$RED" "$NC" "$1" >&2; exit 1; }
 have() { command -v "$1" &>/dev/null; }
@@ -55,6 +56,7 @@ Commands:
   update             Arch news, full upgrade (repo + AUR), Flatpak update,
                      .pacnew merge, reboot check.
   clean              Review orphans, trim pacman and AUR caches.
+  aur check          Report AUR changes since the baseline; exit 1 on drift.
   aur baseline [--yes]
                      Record the installed AUR packages' maintainers and
                      PKGBUILD hashes; status reports changes against it.
@@ -280,6 +282,62 @@ aur_baseline_write() {
 # Commands
 # ---------------------------------------------------------------------------
 
+# Print the AUR section and append findings to the caller's `attention` array.
+# Sets AUR_DRIFT to the number of warnings and critical findings.
+AUR_DRIFT=0
+aur_section() {
+  local lines=() line sev pkg msg infos=0 has_baseline=true
+  AUR_DRIFT=0
+  [[ $AUR_CHECK != 0 ]] || return 0
+  if ! aur_load; then
+    section "AUR packages"
+    warn "Drift check skipped: $AUR_ERR"
+    return 0
+  fi
+  (( ${#AUR_BASES[@]} )) || return 0
+  section "AUR packages"
+  aur_load_baseline || has_baseline=false
+  mapfile -t lines < <(aur_drift)
+  for line in "${lines[@]}"; do
+    IFS=$'\t' read -r sev pkg msg <<<"$line"
+    if [[ $sev == info ]]; then
+      note "$pkg: $msg"; infos=$((infos + 1))
+    else
+      warn "$pkg: $msg"
+      attention+=("AUR $pkg: $msg")
+      AUR_DRIFT=$((AUR_DRIFT + 1))
+    fi
+  done
+  if ! $has_baseline; then
+    note "No baseline yet; record one with: arch-maintenance aur baseline"
+  elif (( AUR_DRIFT == 0 )); then
+    ok "${#AUR_BASES[@]} AUR packages match the baseline"
+  fi
+}
+
+# Installed packages with a known vulnerability that an update fixes.
+advisories_section() {
+  local notify=$1 out='' file=${AUR_FIXTURE:+$AUR_FIXTURE/arch-audit.txt} lines=()
+  if [[ -n $file ]]; then
+    [[ -f $file ]] && out=$(<"$file")
+  elif have arch-audit; then
+    out=$(arch-audit -u 2>/dev/null) || true
+  else
+    $notify || { section "Security advisories"; note "arch-audit is not installed (optional): sudo pacman -S arch-audit"; }
+    return 0
+  fi
+  section "Security advisories"
+  if [[ -z $out ]]; then
+    ok "No installed package has a known vulnerability with a fix available"
+    return 0
+  fi
+  mapfile -t lines <<<"$out"
+  warn "${#lines[@]} installed packages have a known vulnerability with a fix available"
+  printf '      %s\n' "${lines[@]:0:10}"
+  (( ${#lines[@]} <= 10 )) || printf '      ... and %d more (run: arch-audit -u)\n' $(( ${#lines[@]} - 10 ))
+  attention+=("${#lines[@]} packages with known vulnerabilities (run: arch-audit -u)")
+}
+
 cmd_status() {
   local notify=false
   [[ ${1:-} == --notify ]] && notify=true
@@ -303,6 +361,9 @@ cmd_status() {
   else
     ok "Last full upgrade ${days} days ago; $repo repo + $aur AUR updates pending"
   fi
+
+  aur_section
+  advisories_section "$notify"
 
   section "Config files"
   mapfile -t pacnew < <(pacnew_files)
@@ -359,6 +420,7 @@ cmd_status() {
 cmd_aur() {
   case ${1:-} in
     baseline) shift; aur_baseline_cmd "$@" ;;
+    check) local attention=(); aur_section; (( AUR_DRIFT == 0 )) ;;
     *) usage >&2; exit 1 ;;
   esac
 }
