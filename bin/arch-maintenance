@@ -53,8 +53,8 @@ Usage: arch-maintenance [command]
 Commands:
   status [--notify]  Report system health (default). --notify sends a desktop
                      notification when something needs attention.
-  update             Arch news, full upgrade (repo + AUR), Flatpak update,
-                     .pacnew merge, reboot check.
+  update             Arch news, AUR drift check, full upgrade (repo + AUR),
+                     baseline refresh, Flatpak update, .pacnew merge, reboot check.
   clean              Review orphans, trim pacman and AUR caches.
   aur check          Report AUR changes since the baseline; exit 1 on drift.
   aur baseline [--yes]
@@ -450,6 +450,23 @@ aur_baseline_cmd() {
   fi
 }
 
+# Before an upgrade builds AUR packages as your user: stop on drift unless
+# confirmed. Skipped silently without a baseline or when the AUR is unreachable.
+aur_gate() {
+  local lines=() line sev pkg msg flagged=0
+  [[ $AUR_CHECK != 0 ]] || return 0
+  aur_load refresh && aur_load_baseline || return 0
+  (( ${#AUR_BASES[@]} )) || return 0
+  mapfile -t lines < <(aur_drift)
+  for line in "${lines[@]}"; do
+    IFS=$'\t' read -r sev pkg msg <<<"$line"
+    [[ $sev == info ]] && continue
+    (( flagged++ )) || section "AUR drift"
+    warn "$pkg: $msg"
+  done
+  (( flagged == 0 )) || confirm "Review the AUR changes above. Continue with the upgrade?" n
+}
+
 cmd_update() {
   section "Arch news since your last upgrade"
   if have yay; then
@@ -466,11 +483,22 @@ cmd_update() {
     confirm "Continue with the upgrade?" n || exit 0
   fi
 
+  aur_gate || exit 0
+
   section "System upgrade"
   if have yay; then
     yay -Syu || die "Upgrade did not complete; stopping here."
   else
     sudo pacman -Syu || die "Upgrade did not complete; stopping here."
+  fi
+
+  # The upgrade is accepted, so record the new versions and PKGBUILD hashes.
+  if [[ $AUR_CHECK != 0 && -f $BASELINE ]]; then
+    if aur_load refresh && aur_load_baseline; then
+      aur_baseline_write && ok "AUR baseline refreshed"
+    else
+      warn "AUR baseline not refreshed: ${AUR_ERR:-unreadable baseline}"
+    fi
   fi
 
   # Also picks up the Flatpak GL extension matching a freshly upgraded NVIDIA driver.
