@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-11-22
+
+### Added
+
+- `arch-maintenance aur baseline` records each installed AUR package's maintainer, AUR modification time and PKGBUILD hash.
+- AUR drift section in `status` and the daily notification: maintainer changes, adopted or orphaned packages, removals, names newly claimed on the AUR, and PKGBUILD changes without a version change. `arch-maintenance aur check` prints the section and exits 1 on drift.
+- `update` asks for confirmation when AUR drift is found before the upgrade, and refreshes the baseline after it.
+- Optional `arch-audit` advisories in `status`: installed packages with a known vulnerability and an available fix.
+- `ARCH_MAINT_AUR_CHECK=0` turns the AUR check off.
+- `test/aur-drift.sh`, an offline test run in CI.
+
 ## [2.0.1] - 2026-10-16
 
 ### Changed

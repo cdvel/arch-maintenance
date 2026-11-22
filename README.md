@@ -5,7 +5,7 @@
 Maintenance for an Arch Linux desktop. Safe tasks run on systemd timers; package upgrades stay interactive.
 
 - **Automated:** update pre-download, Flatpak updates, cache trimming, mirror refresh, TRIM, pacman database snapshots.
-- **Notifications:** stale updates, `.pacnew` files, pending reboot, failed units, full disks.
+- **Notifications:** stale updates, `.pacnew` files, pending reboot, failed units, full disks, AUR packages that changed maintainer or PKGBUILD, known vulnerabilities with a fix available.
 - **Interactive:** Arch news, repo and AUR upgrade, `.pacnew` merge, reboot check.
 
 ## Quick start
@@ -18,7 +18,7 @@ cd arch-maintenance
 arch-maintenance        # status report
 ```
 
-Optional: [`yay`](https://github.com/Jguer/yay) for AUR upgrades and Arch news, `flatpak`.
+Optional: [`yay`](https://github.com/Jguer/yay) for AUR upgrades and Arch news, `flatpak`, `curl` and `jq` for the AUR drift check, [`arch-audit`](https://archlinux.org/packages/extra/x86_64/arch-audit/) for vulnerability advisories.
 
 ## Commands
 
@@ -27,6 +27,8 @@ Optional: [`yay`](https://github.com/Jguer/yay) for AUR upgrades and Arch news, 
 | `arch-maintenance` | Status report (read-only, no sudo) |
 | `arch-maintenance update` | Guided upgrade |
 | `arch-maintenance clean` | Orphan and cache cleanup |
+| `arch-maintenance aur baseline` | Record the installed AUR packages' maintainers and PKGBUILD hashes |
+| `arch-maintenance aur check` | Report AUR changes since the baseline (exit 1 on drift) |
 | `arch-maintenance help` | Commands and settings |
 
 ### status
@@ -34,6 +36,14 @@ Optional: [`yay`](https://github.com/Jguer/yay) for AUR upgrades and Arch news, 
 ```
 ==> Updates
   ! Last full upgrade 23 days ago; 412 repo + 3 AUR updates pending
+
+==> AUR packages
+  ! example-bin: maintainer changed from alice to mallory
+  • other-bin: flagged out of date on the AUR
+
+==> Security advisories
+  ! Known vulnerabilities with a fix available in 1 installed package(s)
+      ...
 
 ==> Config files
   ! 2 .pacnew/.pacsave files to merge (run: arch-maintenance update)
@@ -54,12 +64,14 @@ Optional: [`yay`](https://github.com/Jguer/yay) for AUR upgrades and Arch news, 
 ### update
 
 1. Arch news since the last upgrade, with a confirmation prompt
-2. `yay -Syu`, or `sudo pacman -Syu` without yay
-3. Flatpak update, including the GL extension for a new NVIDIA driver
-4. `.pacnew`/`.pacsave` merge with `pacdiff`
-5. Reboot check
+2. AUR drift check, with a confirmation prompt when something changed
+3. `yay -Syu`, or `sudo pacman -Syu` without yay
+4. AUR baseline refresh
+5. Flatpak update, including the GL extension for a new NVIDIA driver
+6. `.pacnew`/`.pacsave` merge with `pacdiff`
+7. Reboot check
 
-Steps 3–5 are skipped if the upgrade fails or is cancelled.
+Steps 4–7 are skipped if the upgrade fails or is cancelled.
 
 ### clean
 
@@ -69,6 +81,24 @@ Steps 3–5 are skipped if the upgrade fails or is cancelled.
 4. Journal size
 
 Also warns when makepkg's `debug` option is building `*-debug` packages.
+
+### AUR drift
+
+AUR packages run their PKGBUILD as your user, and an orphaned package can be adopted by anyone. `arch-maintenance aur baseline` records, for each installed AUR package, its maintainer, the AUR's last-modified time and a hash of its PKGBUILD. `status` and `update` then compare the AUR against it:
+
+| Finding | Severity |
+|---|---|
+| Maintainer changed, or an orphan was adopted | Warning, notified |
+| A name that was not on the AUR at baseline now is | Warning, notified |
+| Orphaned, or removed from the AUR | Warning, notified |
+| Same installed and AUR version, but the PKGBUILD hash differs | Warning, notified |
+| Flagged out of date | Listed only |
+
+The PKGBUILD is fetched and hashed only for packages whose AUR modification time moved while the version stayed the same, so a normal release is not reported. When an update is pending, the baseline keeps no hash for that package until `update` refreshes it. Split packages such as `*-debug` are tracked under their base.
+
+The first baseline assumes your installed AUR packages are trustworthy today. It detects change, not an existing compromise. `update` refreshes the baseline after an upgrade you confirmed. State is in `~/.local/state/arch-maintenance/aur-baseline.tsv`; AUR responses are cached for 6 hours. Without a baseline, `status` still reports orphans. Set `ARCH_MAINT_AUR_CHECK=0` to turn the check off.
+
+Vulnerability advisories come from `arch-audit -u` (optional) and are listed only for packages that have a fix available.
 
 ## Automated tasks
 
@@ -121,6 +151,7 @@ Mirror selection: `/etc/xdg/reflector/reflector.conf`.
 | `ARCH_MAINT_MAX_AGE_DAYS` | 14 | Days before a stale upgrade is flagged |
 | `ARCH_MAINT_DISK_WARN_PCT` | 90 | Disk usage warning threshold |
 | `ARCH_MAINT_CACHE_KEEP` | 2 | Package versions `clean` keeps in the cache |
+| `ARCH_MAINT_AUR_CHECK` | 1 | Set to 0 to turn off the AUR drift check |
 | `DIFFPROG` | `vim -d` | Merge tool for `pacdiff` |
 
 ## Reference
@@ -163,7 +194,7 @@ sudo tar --zstd -xf /var/lib/pacman/backup/local-<stamp>.tar.zst -C /var/lib/pac
 
 ## Testing
 
-**CI:** shellcheck, `systemd-analyze verify` on all units, a pacman transaction exercising the snapshot hook and rotation, and CLI smoke tests, in an `archlinux` container on every push to `main` and every pull request.
+**CI:** shellcheck, `systemd-analyze verify` on all units, a pacman transaction exercising the snapshot hook and rotation, offline tests of the AUR drift check (`test/aur-drift.sh`, fixtures stand in for pacman and the AUR), and CLI smoke tests, in an `archlinux` container on every push to `main` and every pull request.
 
 **Integration test:** `test/nspawn.sh` boots systemd in a throwaway `systemd-nspawn` container built from an [Arch Linux Archive](https://archive.archlinux.org/) snapshot, so pending updates are real. The container lives under `/var/tmp` and is deleted on exit, including on failure or Ctrl-C.
 

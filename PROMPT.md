@@ -19,6 +19,9 @@ Steps:
    Review the orphan list with me before removing anything.
 4. Run `yay -Pw`. For any news requiring manual intervention that applies
    to my installed packages, walk me through it before upgrading.
+   If `arch-maintenance status` shows AUR drift, explain each finding and
+   check the package's AUR page before I upgrade. If there is no baseline,
+   explain what `arch-maintenance aur baseline` assumes and offer to record it.
 5. Have me run `arch-maintenance update`. On file conflicts, check owners
    with `pacman -Qo` and suggest a specific --overwrite path only if safe.
 6. Before rebooting, check `dkms status` (if used) and the upgrade output
