@@ -8,12 +8,21 @@
 
 set -euo pipefail
 
-readonly VERSION=2.0.1
+readonly VERSION=2.1.0
 
 # Tunables (environment overrides)
 MAX_AGE_DAYS=${ARCH_MAINT_MAX_AGE_DAYS:-14}   # nag when the last full upgrade is older than this
 DISK_WARN_PCT=${ARCH_MAINT_DISK_WARN_PCT:-90} # warn when a filesystem is fuller than this
 CACHE_KEEP=${ARCH_MAINT_CACHE_KEEP:-2}        # package versions `clean` keeps in the pacman cache
+AUR_CHECK=${ARCH_MAINT_AUR_CHECK:-1}          # 0 turns off the AUR drift check
+AUR_FIXTURE=${ARCH_MAINT_AUR_FIXTURE:-}       # test only: directory standing in for pacman, the AUR and arch-audit
+
+readonly AUR_RPC=https://aur.archlinux.org/rpc/v5/info
+readonly AUR_CGIT=https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD
+readonly AUR_TTL=21600 # seconds an AUR RPC response is reused
+STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/arch-maintenance
+CACHE_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/arch-maintenance
+BASELINE=$STATE_DIR/aur-baseline.tsv
 
 if [[ -t 1 ]]; then
   BOLD=$'\e[1m' RED=$'\e[31m' GREEN=$'\e[32m' YELLOW=$'\e[33m' BLUE=$'\e[34m' NC=$'\e[0m'
@@ -46,6 +55,9 @@ Commands:
   update             Arch news, full upgrade (repo + AUR), Flatpak update,
                      .pacnew merge, reboot check.
   clean              Review orphans, trim pacman and AUR caches.
+  aur baseline [--yes]
+                     Record the installed AUR packages' maintainers and
+                     PKGBUILD hashes; status reports changes against it.
   help               Show this help.
   version            Show version.
 
@@ -53,6 +65,7 @@ Environment:
   ARCH_MAINT_MAX_AGE_DAYS   Days before a stale upgrade is flagged (default 14)
   ARCH_MAINT_DISK_WARN_PCT  Disk usage warning threshold (default 90)
   ARCH_MAINT_CACHE_KEEP     Cached versions kept by 'clean' (default 2)
+  ARCH_MAINT_AUR_CHECK      Set to 0 to turn off the AUR drift check (default 1)
   DIFFPROG                  Merge tool passed to pacdiff (default: vim -d)
 EOF
 }
@@ -96,6 +109,172 @@ makepkg_debug_enabled() {
 }
 
 dir_size() { du -sh "$1" 2>/dev/null | cut -f1; }
+
+# ---------------------------------------------------------------------------
+# AUR drift
+#
+# The baseline records, per installed AUR package base, the maintainer, the
+# AUR's last-modified time and a hash of the PKGBUILD. Later checks compare the
+# AUR's current state against it. The maintainer is "-" for an orphan and "~"
+# for a package that is not on the AUR (built locally).
+# ---------------------------------------------------------------------------
+
+declare -A INST_VER AUR_VER AUR_MAINT AUR_MOD AUR_OOD BL_VER BL_MAINT BL_MOD BL_HASH
+AUR_BASES=()
+AUR_ERR=''
+
+# Installed foreign packages as "pkgbase<TAB>pkgname<TAB>version". Split
+# packages (e.g. *-debug) share their base's name in the local database.
+aur_installed() {
+  if [[ -n $AUR_FIXTURE ]]; then cat "$AUR_FIXTURE/installed.tsv"; return; fi
+  local db name ver base
+  db=$(pacman-conf DBPath 2>/dev/null || echo /var/lib/pacman/)
+  pacman -Qm 2>/dev/null | while read -r name ver; do
+    base=$(awk '/^%BASE%$/ { getline; print; exit }' "${db}local/$name-$ver/desc" 2>/dev/null) || true
+    printf '%s\t%s\t%s\n' "${base:-$name}" "$name" "$ver"
+  done
+}
+
+# AUR RPC info for the given package names, as {"results": [...]}. Reuses a
+# cached response for AUR_TTL seconds unless asked to refresh.
+aur_info() {
+  local refresh=$1 key cache=$CACHE_DIR/aur-info.json stamp=$CACHE_DIR/aur-info.key
+  shift
+  if [[ -n $AUR_FIXTURE ]]; then cat "$AUR_FIXTURE/rpc.json"; return; fi
+  have curl && have jq || return 2
+  key=$(printf '%s\n' "$@" | sort | sha256sum | cut -d' ' -f1)
+  if [[ -z $refresh && -f $cache && -f $stamp && $(<"$stamp") == "$key" ]] &&
+    (( $(date +%s) - $(stat -c %Y "$cache") < AUR_TTL )); then
+    cat "$cache"; return
+  fi
+  local chunk out='' args=() i n
+  for (( i = 0; i < $#; i += 100 )); do
+    args=()
+    for n in "${@:i+1:100}"; do args+=(--data-urlencode "arg[]=$n"); done
+    chunk=$(curl -fsS -m 20 -G "${args[@]}" "$AUR_RPC") || return 1
+    jq -e '.type != "error"' <<<"$chunk" >/dev/null || return 1
+    out+=$chunk$'\n'
+  done
+  out=$(jq -s '{results: [.[].results[]]}' <<<"$out") || return 1
+  mkdir -p "$CACHE_DIR"
+  printf '%s\n' "$out" >"$cache"
+  printf '%s\n' "$key" >"$stamp"
+  printf '%s\n' "$out"
+}
+
+aur_pkgbuild_hash() {
+  if [[ -n $AUR_FIXTURE ]]; then
+    sha256sum "$AUR_FIXTURE/PKGBUILD/$1" 2>/dev/null | cut -d' ' -f1 | grep .
+    return
+  fi
+  curl -fsS -m 20 "$AUR_CGIT?h=$1" | sha256sum | cut -d' ' -f1
+}
+
+# Fill INST_* and AUR_* from the installed packages and the AUR. Returns 1
+# with AUR_ERR set when the AUR cannot be queried.
+aur_load() {
+  local refresh=${1:-} base name ver maint mod ood info rc=0 names=()
+  INST_VER=() AUR_VER=() AUR_MAINT=() AUR_MOD=() AUR_OOD=() AUR_BASES=() AUR_ERR=''
+  while IFS=$'\t' read -r base name ver; do
+    [[ -n ${INST_VER[$base]:-} ]] || { AUR_BASES+=("$base"); INST_VER[$base]=$ver; }
+    names+=("$name" "$base")
+  done < <(aur_installed)
+  (( ${#AUR_BASES[@]} )) || return 0
+  # Query bases too: an installed *-debug package may be the only foreign one.
+  mapfile -t names < <(printf '%s\n' "${names[@]}" | sort -u)
+  info=$(aur_info "$refresh" "${names[@]}") || rc=$?
+  case $rc in
+    0) ;;
+    2) AUR_ERR="needs curl and jq"; return 1 ;;
+    *) AUR_ERR="could not query the AUR"; return 1 ;;
+  esac
+  while IFS=$'\t' read -r base ver maint mod ood; do
+    [[ -z ${AUR_VER[$base]:-} ]] || continue
+    AUR_VER[$base]=$ver AUR_MAINT[$base]=$maint AUR_MOD[$base]=$mod AUR_OOD[$base]=$ood
+  done < <(jq -r '.results[] | [.PackageBase, .Version, (.Maintainer // "-"), .LastModified, (.OutOfDate // "-")] | @tsv' <<<"$info")
+}
+
+aur_load_baseline() {
+  local base ver maint mod hash
+  BL_VER=() BL_MAINT=() BL_MOD=() BL_HASH=()
+  [[ -f $BASELINE ]] || return 1
+  while IFS=$'\t' read -r base ver maint mod hash; do
+    [[ -z $base || $base == '#'* ]] && continue
+    BL_VER[$base]=$ver BL_MAINT[$base]=$maint BL_MOD[$base]=$mod BL_HASH[$base]=${hash:--}
+  done <"$BASELINE"
+}
+
+# Compare the loaded AUR state with the baseline. Prints
+# "severity<TAB>package<TAB>message" lines; severity is crit, warn or info.
+aur_drift() {
+  local base cur old new
+  for base in "${AUR_BASES[@]}"; do
+    cur=${AUR_MAINT[$base]:-}
+    if [[ -n ${BL_MAINT[$base]:-} ]]; then
+      old=${BL_MAINT[$base]}
+      if [[ -z $cur ]]; then
+        [[ $old == '~' ]] || printf 'warn\t%s\tno longer on the AUR (was maintained by %s)\n' "$base" "$old"
+        continue
+      fi
+      if [[ $old == '~' ]]; then
+        printf 'crit\t%s\tnow on the AUR (maintainer %s) but was not at baseline\n' "$base" "$cur"
+        continue
+      fi
+      if [[ $cur != "$old" ]]; then
+        if [[ $cur == - ]]; then
+          printf 'warn\t%s\torphaned (was maintained by %s)\n' "$base" "$old"
+        elif [[ $old == - ]]; then
+          printf 'crit\t%s\tadopted by %s (was orphaned)\n' "$base" "$cur"
+        else
+          printf 'crit\t%s\tmaintainer changed from %s to %s\n' "$base" "$old" "$cur"
+        fi
+      fi
+      # The same version on both sides, yet the AUR changed since the baseline:
+      # the PKGBUILD may differ without a release to show for it.
+      if [[ ${BL_HASH[$base]} != - && ${AUR_VER[$base]} == "${INST_VER[$base]}" &&
+        ${BL_VER[$base]} == "${INST_VER[$base]}" && ${AUR_MOD[$base]} != "${BL_MOD[$base]}" ]]; then
+        if new=$(aur_pkgbuild_hash "$base"); then
+          [[ $new == "${BL_HASH[$base]}" ]] ||
+            printf 'warn\t%s\tPKGBUILD changed without a version change\n' "$base"
+        else
+          printf 'info\t%s\tcould not fetch the PKGBUILD to compare\n' "$base"
+        fi
+      fi
+    elif [[ -n $cur && $cur == - ]]; then
+      printf 'warn\t%s\torphaned\n' "$base"
+    fi
+    [[ -z ${AUR_OOD[$base]:-} || ${AUR_OOD[$base]} == - ]] ||
+      printf 'info\t%s\tflagged out of date on the AUR\n' "$base"
+  done
+}
+
+# Write the loaded state as the new baseline. Hashes are reused when nothing
+# changed, fetched when the installed version matches the AUR's, and unknown
+# ("-") when an update is pending, since only the latest PKGBUILD is served.
+aur_baseline_write() {
+  local base hash tmp
+  mkdir -p "$STATE_DIR"
+  tmp=$(mktemp "$STATE_DIR/.baseline.XXXXXX")
+  printf '# arch-maintenance AUR baseline: base, version, maintainer, last_modified, pkgbuild_sha256\n' >"$tmp"
+  for base in "${AUR_BASES[@]}"; do
+    if [[ -z ${AUR_VER[$base]:-} ]]; then
+      printf '%s\t%s\t~\t0\t-\n' "$base" "${INST_VER[$base]}" >>"$tmp"
+      continue
+    fi
+    hash=-
+    if [[ ${AUR_VER[$base]} == "${INST_VER[$base]}" ]]; then
+      if [[ ${BL_VER[$base]:-} == "${INST_VER[$base]}" && ${BL_MOD[$base]:-} == "${AUR_MOD[$base]}" &&
+        ${BL_HASH[$base]:--} != - ]]; then
+        hash=${BL_HASH[$base]}
+      else
+        hash=$(aur_pkgbuild_hash "$base") || hash=-
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$base" "${INST_VER[$base]}" "${AUR_MAINT[$base]}" "${AUR_MOD[$base]}" "$hash" >>"$tmp"
+  done
+  mv "$tmp" "$BASELINE"
+}
+
 
 # ---------------------------------------------------------------------------
 # Commands
@@ -174,6 +353,38 @@ cmd_status() {
     notify-send -a arch-maintenance -i system-software-update \
       "Arch maintenance needed" "$(printf '• %s\n' "${attention[@]}")" ||
       echo "notify-send failed (is a notification daemon running?)" >&2
+  fi
+}
+
+cmd_aur() {
+  case ${1:-} in
+    baseline) shift; aur_baseline_cmd "$@" ;;
+    *) usage >&2; exit 1 ;;
+  esac
+}
+
+aur_baseline_cmd() {
+  local yes=false lines=() sev pkg msg base new=0 gone=0
+  [[ ${1:-} == --yes ]] && yes=true
+  section "AUR baseline"
+  aur_load refresh || die "AUR baseline: $AUR_ERR"
+  if (( ! ${#AUR_BASES[@]} )); then ok "No AUR packages installed"; return; fi
+  if aur_load_baseline; then
+    mapfile -t lines < <(aur_drift)
+    for msg in "${lines[@]}"; do
+      IFS=$'\t' read -r sev pkg msg <<<"$msg"
+      [[ $sev == info ]] || warn "$pkg: $msg"
+    done
+    for base in "${AUR_BASES[@]}"; do [[ -n ${BL_VER[$base]:-} ]] || new=$((new + 1)); done
+    for base in "${!BL_VER[@]}"; do [[ -n ${INST_VER[$base]:-} ]] || gone=$((gone + 1)); done
+    ok "$new new and $gone removed packages since the last baseline"
+  else
+    ok "No baseline yet: ${#AUR_BASES[@]} packages will be recorded"
+    warn "The baseline assumes your installed AUR packages are trustworthy today. It detects change, not existing compromise."
+  fi
+  if $yes || confirm "Record the current AUR state as the baseline?" n; then
+    aur_baseline_write
+    ok "Wrote $BASELINE"
   fi
 }
 
@@ -275,6 +486,7 @@ case ${1:-status} in
   status) shift || true; cmd_status "$@" ;;
   update) cmd_update ;;
   clean) cmd_clean ;;
+  aur) shift; cmd_aur "$@" ;;
   help | -h | --help) usage ;;
   version | --version) echo "arch-maintenance $VERSION" ;;
   *) usage >&2; exit 1 ;;
